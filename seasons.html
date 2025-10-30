@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TV Show Seasons</title>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #121212;
+            color: #ffffff;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        h1 {
+            text-align: center;
+            font-size: 28px;
+        }
+        #seasons-results {
+            margin-top: 20px;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            list-style-type: none;
+        }
+        .season-item {
+            padding: 15px;
+            margin: 10px 0;
+            cursor: pointer;
+            background-color: #1e1e1e;
+            border-radius: 5px;
+            border: 1px solid #333;
+            width: 90%;
+            max-width: 600px;
+            text-align: center;
+            transition: background-color 0.3s ease;
+            position: relative;
+        }
+        .season-item:hover {
+            background-color: #333;
+        }
+        .season-title {
+            font-size: 18px;
+            font-weight: bold;
+        }
+        .watched-state {
+            display: none;   /* Hide by default; shown only for logged in users */
+            border-radius: 14px;
+            padding: 3px 12px;
+            font-size: 13px;
+            margin: 6px 0 0 0;
+            font-weight: bold;
+            user-select: none;
+            cursor: pointer;
+            transition: background 0.2s, color 0.2s;
+            position: absolute;
+            top: 15px;
+            right: 18px;
+        }
+        .watched-not { background: #444; color: #fff; }
+        .watched-watching { background: #ffe066; color: #222; }
+        .watched-watched { background: #26d964; color: #fff; }
+        @media (max-width: 768px) {
+            h1 {
+                font-size: 22px;
+            }
+            .season-title {
+                font-size: 16px;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<h1>Seasons for the Show</h1>
+<ul id="seasons-results"></ul>
+
+<script>
+    const urlParams = new URLSearchParams(window.location.search);
+    const tmdbId = urlParams.get('id');
+
+    // For watched state
+    function watchedKey(item_type, item_id, season_number) {
+        return `${item_type}:${item_id}:s${season_number}`;
+    }
+    function watchedStateClass(state) {
+        if (state === "watching") return "watched-watching";
+        if (state === "watched") return "watched-watched";
+        return "watched-not";
+    }
+    function watchedStateText(state) {
+        if (state === "watching") return "Watching";
+        if (state === "watched") return "Watched";
+        return "Not Watched";
+    }
+
+    let lastSeasons = [];
+
+    // Function to fetch seasons for a given TMDB ID
+    function fetchSeasons(tmdbId) {
+        const url = `/api/fetchSeasons?id=${tmdbId}`;
+        $.get(url, function(data) {
+            if (data && data.seasons) {
+                lastSeasons = data.seasons;
+                displaySeasons(data.seasons);
+            } else {
+                $('#seasons-results').html('<p>No seasons found</p>');
+                lastSeasons = [];
+            }
+        }).fail(function() {
+            $('#seasons-results').html('<p>Error fetching seasons</p>');
+            lastSeasons = [];
+        });
+    }
+
+    // Function to display the seasons
+    function displaySeasons(seasons) {
+        $('#seasons-results').html(''); // Clear previous results
+
+        // Only show watched-state if logged in
+        const isLoggedIn = !!localStorage.getItem('token');
+
+        seasons.forEach(season => {
+            const seasonNumber = season.season_number;
+            const seasonName = season.name && season.name !== `Season ${seasonNumber}` ? `: ${season.name}` : '';
+            const watchedStateSpan = isLoggedIn
+                ? `<span class="watched-state watched-not" data-type="tmdb-tv" data-id="${tmdbId}" data-season="${seasonNumber}" onclick="event.stopPropagation(); handleWatchedClick(this);"></span>`
+                : '';
+            const seasonHtml = `
+                <li class="season-item" data-type="tmdb-tv" data-id="${tmdbId}" data-season="${seasonNumber}" onclick="goToEpisodes(${seasonNumber})">
+                    <div class="season-title">Season ${seasonNumber}${seasonName}</div>
+                    ${watchedStateSpan}
+                </li>
+            `;
+            $('#seasons-results').append(seasonHtml);
+        });
+
+        if (isLoggedIn) {
+            $('.watched-state').show();
+            batchUpdateWatchedSeasons();
+        }
+    }
+
+    // Function to redirect to episodes.html with selected season
+    function goToEpisodes(season) {
+        window.location.href = `episodes.html?season=${season}&id=${tmdbId}`;
+    }
+
+    // Batch checked watched state for seasons
+    function batchUpdateWatchedSeasons() {
+        if (!lastSeasons.length) return;
+        const items = lastSeasons.map(season => ({
+            item_type: "tmdb-tv",
+            item_id: tmdbId,
+            season_number: season.season_number
+        }));
+        const token = localStorage.getItem('token');
+        if (!token) return;
+        fetch('/api/watched?items=' + encodeURIComponent(JSON.stringify(items)), {
+            headers: { Authorization: 'Bearer ' + token }
+        })
+            .then(res => res.json())
+            .then(data => {
+                if (!data.states) return;
+                items.forEach(item => {
+                    const key = watchedKey(item.item_type, item.item_id, item.season_number);
+                    const state = data.states[key] || "not_watched";
+                    const $el = $('.watched-state[data-type="tmdb-tv"][data-id="' + item.item_id + '"][data-season="' + item.season_number + '"]');
+                    $el.removeClass("watched-not watched-watching watched-watched")
+                        .addClass(watchedStateClass(state))
+                        .text(watchedStateText(state));
+                });
+            });
+    }
+
+    // Handle watched state click
+    function handleWatchedClick(el) {
+        if (!localStorage.getItem('token')) {
+            alert('Login to track progress!');
+            return;
+        }
+        const $el = $(el);
+        const item_type = $el.data('type');
+        const item_id = $el.data('id');
+        const season_number = $el.data('season');
+        let state;
+        if ($el.hasClass('watched-not')) state = 'watching';
+        else if ($el.hasClass('watched-watching')) state = 'watched';
+        else state = 'not_watched';
+
+        $el.removeClass('watched-not watched-watching watched-watched');
+        $el.addClass(watchedStateClass(state)).text(watchedStateText(state));
+
+        fetch('/api/watched', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + localStorage.getItem('token'),
+            },
+            body: JSON.stringify({ item_type, item_id, season_number, state }),
+        });
+    }
+
+    // Fetch the seasons on page load
+    fetchSeasons(tmdbId);
+</script>
+
+<!-- Include Common JavaScript File (optional for your project) -->
+<!-- <script src="/main.js"></script> -->
+</body>
+</html>
